@@ -1,0 +1,17 @@
+{
+  "name": "cryptoedge-backend",
+  "version": "1.0.0",
+  "description": "Proxy backend for CryptoEdge AI — Binance only",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "cors": "^2.8.5",
+    "ws": "^8.18.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
