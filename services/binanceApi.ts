@@ -1,7 +1,9 @@
 // ============================================================
 // services/binanceApi.ts
-// داده‌های واقعی از Binance — WebSocket لحظه‌ای + Klines تاریخی
+// دیتای واقعی Binance — از طریق بک‌اند خودمون (رفع بلاک جغرافیایی)
 // ============================================================
+
+import { BACKEND_URL, BACKEND_WS_URL } from './config';
 
 export interface OHLCCandle {
   timestamp: number;
@@ -47,9 +49,9 @@ export async function getKlines(
   if (!symbol) return [];
 
   try {
-    const url = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
+    const url = `${BACKEND_URL}/api/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
     const response = await fetch(url);
-    if (!response.ok) throw new Error(`Binance HTTP ${response.status}`);
+    if (!response.ok) throw new Error(`Backend HTTP ${response.status}`);
     const data = await response.json();
     if (!Array.isArray(data)) return [];
 
@@ -62,14 +64,14 @@ export async function getKlines(
       volume: Number(c[5]),
     }));
   } catch (error) {
-    console.error('Binance klines error:', error);
+    console.error('Klines error:', error);
     return [];
   }
 }
 
 export async function getBinancePrices(): Promise<Record<string, number> | null> {
   try {
-    const response = await fetch(`https://api.binance.com/api/v3/ticker/price`);
+    const response = await fetch(`${BACKEND_URL}/api/prices`);
     if (!response.ok) return null;
     const data: { symbol: string; price: string }[] = await response.json();
 
@@ -116,7 +118,7 @@ export function subscribeLivePrices(
   const connect = () => {
     if (!active) return;
     try {
-      ws = new WebSocket(`wss://stream.binance.com:9443/stream?streams=${streams}`);
+      ws = new WebSocket(`${BACKEND_WS_URL}/ws?streams=${streams}`);
 
       ws.onopen = () => {
         reconnectDelay = 3000;
@@ -168,6 +170,8 @@ export function subscribeKlineStream(
   const symbol = SYMBOL_MAP[coinKey as CoinKey];
   if (!symbol) return () => {};
 
+  const streamName = `${symbol.toLowerCase()}@kline_${interval}`;
+
   let ws: WebSocket | null = null;
   let active = true;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -176,9 +180,7 @@ export function subscribeKlineStream(
   const connect = () => {
     if (!active) return;
     try {
-      ws = new WebSocket(
-        `wss://stream.binance.com:9443/ws/${symbol.toLowerCase()}@kline_${interval}`
-      );
+      ws = new WebSocket(`${BACKEND_WS_URL}/ws?streams=${streamName}`);
 
       ws.onopen = () => {
         reconnectDelay = 3000;
@@ -197,8 +199,8 @@ export function subscribeKlineStream(
 
       ws.onmessage = (event) => {
         try {
-          const msg = JSON.parse(event.data as string);
-          const k = msg.k;
+          const parsed = JSON.parse(event.data as string);
+          const k = parsed.data?.k;
           if (!k) return;
           onCandle(
             {

@@ -1,6 +1,6 @@
 // ============================================================
 // backend/server.js
-// فقط یک پروکسی برای Binance — رفع بلاک جغرافیایی
+// فقط یک پروکسی برای Binance — رفع بلاک جغرافیایی + بلاک IP اشتراکی
 // ============================================================
 
 const express = require('express');
@@ -14,8 +14,8 @@ app.use(cors());
 app.use(express.json());
 
 const PORT = process.env.PORT || 3001;
-const BINANCE_REST = 'https://api.binance.com';
-const BINANCE_WS = 'wss://stream.binance.com:9443';
+const BINANCE_REST = 'https://data-api.binance.vision';
+const BINANCE_WS = 'wss://data-stream.binance.vision';
 
 // کندل‌های تاریخی
 app.get('/api/klines', async (req, res) => {
