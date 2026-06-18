@@ -15,21 +15,38 @@ const BINANCE_WS = 'wss://data-stream.binance.vision';
 // Cache برای قیمت‌ها
 let pricesCache = null;
 let pricesCacheTime = 0;
-const CACHE_TTL = 30000; // 30 ثانیه
+const PRICES_CACHE_TTL = 30000; // 30 ثانیه
 
-// کندل‌های تاریخی
+// Cache برای کندل‌ها — کلید: symbol_interval_limit
+const klinesCache = new Map();
+const KLINES_CACHE_TTL = 60000; // 60 ثانیه
+
+// کندل‌های تاریخی — با cache
 app.get('/api/klines', async (req, res) => {
   const { symbol, interval = '15m', limit = 200 } = req.query;
   if (!symbol) return res.status(400).json({ error: 'symbol is required' });
 
+  const cacheKey = `${symbol}_${interval}_${limit}`;
+  const now = Date.now();
+  const cached = klinesCache.get(cacheKey);
+
+  if (cached && (now - cached.time) < KLINES_CACHE_TTL) {
+    return res.json(cached.data);
+  }
+
   try {
     const url = `${BINANCE_REST}/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
     const r = await fetch(url);
-    if (!r.ok) return res.status(r.status).json({ error: `Binance HTTP ${r.status}` });
+    if (!r.ok) {
+      if (cached) return res.json(cached.data);
+      return res.status(r.status).json({ error: `Binance HTTP ${r.status}` });
+    }
     const data = await r.json();
+    klinesCache.set(cacheKey, { data, time: now });
     res.json(data);
   } catch (err) {
     console.error('klines proxy error:', err);
+    if (cached) return res.json(cached.data);
     res.status(500).json({ error: 'Failed to fetch klines from Binance' });
   }
 });
@@ -37,19 +54,23 @@ app.get('/api/klines', async (req, res) => {
 // قیمت لحظه‌ای — با cache
 app.get('/api/prices', async (req, res) => {
   const now = Date.now();
-  if (pricesCache && (now - pricesCacheTime) < CACHE_TTL) {
+  if (pricesCache && (now - pricesCacheTime) < PRICES_CACHE_TTL) {
     return res.json(pricesCache);
   }
 
   try {
     const r = await fetch(`${BINANCE_REST}/api/v3/ticker/price`);
-    if (!r.ok) return res.status(r.status).json({ error: `Binance HTTP ${r.status}` });
+    if (!r.ok) {
+      if (pricesCache) return res.json(pricesCache);
+      return res.status(r.status).json({ error: `Binance HTTP ${r.status}` });
+    }
     const data = await r.json();
     pricesCache = data;
     pricesCacheTime = now;
     res.json(data);
   } catch (err) {
     console.error('prices proxy error:', err);
+    if (pricesCache) return res.json(pricesCache);
     res.status(500).json({ error: 'Failed to fetch prices from Binance' });
   }
 });
