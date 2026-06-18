@@ -1,8 +1,3 @@
-// ============================================================
-// backend/server.js
-// فقط یک پروکسی برای Binance — رفع بلاک جغرافیایی + بلاک IP اشتراکی
-// ============================================================
-
 const express = require('express');
 const cors = require('cors');
 const http = require('http');
@@ -16,6 +11,11 @@ app.use(express.json());
 const PORT = process.env.PORT || 3001;
 const BINANCE_REST = 'https://data-api.binance.vision';
 const BINANCE_WS = 'wss://data-stream.binance.vision';
+
+// Cache برای قیمت‌ها
+let pricesCache = null;
+let pricesCacheTime = 0;
+const CACHE_TTL = 30000; // 30 ثانیه
 
 // کندل‌های تاریخی
 app.get('/api/klines', async (req, res) => {
@@ -34,12 +34,19 @@ app.get('/api/klines', async (req, res) => {
   }
 });
 
-// قیمت لحظه‌ای همه کوین‌ها
+// قیمت لحظه‌ای — با cache
 app.get('/api/prices', async (req, res) => {
+  const now = Date.now();
+  if (pricesCache && (now - pricesCacheTime) < CACHE_TTL) {
+    return res.json(pricesCache);
+  }
+
   try {
     const r = await fetch(`${BINANCE_REST}/api/v3/ticker/price`);
     if (!r.ok) return res.status(r.status).json({ error: `Binance HTTP ${r.status}` });
     const data = await r.json();
+    pricesCache = data;
+    pricesCacheTime = now;
     res.json(data);
   } catch (err) {
     console.error('prices proxy error:', err);
@@ -51,7 +58,6 @@ app.get('/health', (req, res) => res.json({ ok: true, time: Date.now() }));
 
 const server = http.createServer(app);
 
-// رله WebSocket — اپ به اینجا وصل می‌شود، اینجا به Binance وصل می‌شود
 const wss = new WebSocket.Server({ server, path: '/ws' });
 
 wss.on('connection', (clientWs, req) => {
