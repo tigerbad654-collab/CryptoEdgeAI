@@ -26,7 +26,7 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// گرفتن کندل‌های یک symbol از Binance (با کش)
+// گرتن کندل‌های یک symbol از Binance (با کش)
 async function fetchKlines(symbol, interval, limit) {
   const cacheKey = `${symbol}_${interval}_${limit}`;
   const now = Date.now();
@@ -65,8 +65,8 @@ app.get('/api/klines', async (req, res) => {
   res.json(result.data);
 });
 
-// کندل‌های چند symbol با یک درخواست از فرانت‌اند —
-// پشت‌صحنه پشت‌سرهم (نه موازی) به Binance درخواست می‌زند تا فشار کمتر شود
+// کندل‌های چند symbol با یک درخواست از رانت‌اند —
+// پشت‌صحنه پشت‌سرهم (نه موازی) به Binance درخواست می‌زند تا شار کمتر شود
 app.get('/api/klines-batch', async (req, res) => {
   const { symbols, interval = '15m', limit = 200 } = req.query;
   if (!symbols) return res.status(400).json({ error: 'symbols is required (comma separated)' });
@@ -79,13 +79,36 @@ app.get('/api/klines-batch', async (req, res) => {
     const r = await fetchKlines(symbol, interval, limit);
     result[symbol] = r.error ? { error: r.error } : r.data;
 
-    // فاصله‌ی کوتاه بین درخواست‌ها به Binance، فقط وقتی واقعاً درخواست تازه زده شد (نه از کش)
+    // اصله‌ی کوتاه بین درخواست‌ها به Binance، قط وقتی واقعاً درخواست تازه زده شد (نه از کش)
     if (!r.fromCache && i < symbolList.length - 1) {
       await sleep(150);
     }
   }
 
   res.json(result);
+});
+
+// کندل‌های تاریخی صفحه‌بندی‌شده — فقط برای بک‌تست (سمت کاربر اجرا می‌شود)
+// هیچ ربطی به مسیر زنده‌ی اپ موبایل ندارد
+app.get('/api/historical-klines', async (req, res) => {
+  const { symbol, interval = '15m', startTime, endTime } = req.query;
+  if (!symbol) return res.status(400).json({ error: 'symbol is required' });
+  if (!startTime || !endTime) {
+    return res.status(400).json({ error: 'startTime and endTime are required (ms timestamps)' });
+  }
+
+  try {
+    const url = `${BINANCE_REST}/api/v3/klines?symbol=${symbol}&interval=${interval}&startTime=${startTime}&endTime=${endTime}&limit=1000`;
+    const r = await fetch(url);
+    if (!r.ok) {
+      return res.status(502).json({ error: `Binance HTTP ${r.status}` });
+    }
+    const data = await r.json();
+    res.json(data);
+  } catch (err) {
+    console.error('historical-klines proxy error:', err.message);
+    res.status(500).json({ error: 'Failed to fetch historical klines from Binance' });
+  }
 });
 
 // قیمت لحظه‌ای — با cache (همه‌ی symbol‌ها با یک درخواست از Binance)
