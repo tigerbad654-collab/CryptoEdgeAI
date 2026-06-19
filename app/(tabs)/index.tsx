@@ -10,7 +10,7 @@ import {
   COINS,
   COIN_NAMES,
   CoinKey,
-  getKlines,
+  getKlinesBatch,
   subscribeLivePrices,
 } from '../../services/binanceApi';
 import { OHLCData, SignalResult, generateSignal } from '../../services/signalEngine';
@@ -34,15 +34,17 @@ export default function HomeScreen() {
     const newSignals: Partial<Record<CoinKey, SignalResult>> = {};
     const newPrices: Partial<PriceData> = {};
 
-    await Promise.all(
-      COINS.map(async (coin) => {
-        const candles = await getKlines(coin, '15m', 200);
-        if (candles.length < 30) return;
-        ohlcHistories.current[coin] = candles;
-        newSignals[coin] = generateSignal(candles);
-        newPrices[coin] = candles[candles.length - 1].close;
-      })
-    );
+    // یک درخواست واحد برای همه‌ی کوین‌ها (به‌جای ۸ درخواست موازی جدا)
+    // این فشار روی Binance رو خیلی کم می‌کنه و ریسک بن شدن IP رو کاهش می‌ده
+    const candlesByCoin = await getKlinesBatch(COINS, '15m', 200);
+
+    COINS.forEach((coin) => {
+      const candles = candlesByCoin[coin];
+      if (!candles || candles.length < 30) return;
+      ohlcHistories.current[coin] = candles;
+      newSignals[coin] = generateSignal(candles);
+      newPrices[coin] = candles[candles.length - 1].close;
+    });
 
     setSignals((prev) => ({ ...prev, ...newSignals }));
     setPrices((prev) => ({ ...prev, ...newPrices }));

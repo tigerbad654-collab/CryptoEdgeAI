@@ -21,37 +21,74 @@ const PRICES_CACHE_TTL = 30000; // 30 ثانیه
 const klinesCache = new Map();
 const KLINES_CACHE_TTL = 60000; // 60 ثانیه
 
-// کندل‌های تاریخی — با cache
-app.get('/api/klines', async (req, res) => {
-  const { symbol, interval = '15m', limit = 200 } = req.query;
-  if (!symbol) return res.status(400).json({ error: 'symbol is required' });
+// کوچک کمک‌کننده: یک تاخیر کوتاه بین درخواست‌ها به Binance
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
+// گرفتن کندل‌های یک symbol از Binance (با کش)
+async function fetchKlines(symbol, interval, limit) {
   const cacheKey = `${symbol}_${interval}_${limit}`;
   const now = Date.now();
   const cached = klinesCache.get(cacheKey);
 
   if (cached && (now - cached.time) < KLINES_CACHE_TTL) {
-    return res.json(cached.data);
+    return { data: cached.data, fromCache: true };
   }
 
   try {
     const url = `${BINANCE_REST}/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
     const r = await fetch(url);
     if (!r.ok) {
-      if (cached) return res.json(cached.data);
-      return res.status(r.status).json({ error: `Binance HTTP ${r.status}` });
+      if (cached) return { data: cached.data, fromCache: true };
+      return { error: `Binance HTTP ${r.status}` };
     }
     const data = await r.json();
     klinesCache.set(cacheKey, { data, time: now });
-    res.json(data);
+    return { data, fromCache: false };
   } catch (err) {
-    console.error('klines proxy error:', err);
-    if (cached) return res.json(cached.data);
-    res.status(500).json({ error: 'Failed to fetch klines from Binance' });
+    console.error(`klines fetch error for ${symbol}:`, err.message);
+    if (cached) return { data: cached.data, fromCache: true };
+    return { error: 'Failed to fetch klines from Binance' };
   }
+}
+
+// کندل‌های تاریخی — یک symbol (همونی که قبلاً بود، دست نخورده)
+app.get('/api/klines', async (req, res) => {
+  const { symbol, interval = '15m', limit = 200 } = req.query;
+  if (!symbol) return res.status(400).json({ error: 'symbol is required' });
+
+  const result = await fetchKlines(symbol, interval, limit);
+  if (result.error) {
+    return res.status(result.fromCache ? 200 : 502).json({ error: result.error });
+  }
+  res.json(result.data);
 });
 
-// قیمت لحظه‌ای — با cache
+// کندل‌های چند symbol با یک درخواست از فرانت‌اند —
+// پشت‌صحنه پشت‌سرهم (نه موازی) به Binance درخواست می‌زند تا فشار کمتر شود
+app.get('/api/klines-batch', async (req, res) => {
+  const { symbols, interval = '15m', limit = 200 } = req.query;
+  if (!symbols) return res.status(400).json({ error: 'symbols is required (comma separated)' });
+
+  const symbolList = String(symbols).split(',').map((s) => s.trim()).filter(Boolean);
+  const result = {};
+
+  for (let i = 0; i < symbolList.length; i++) {
+    const symbol = symbolList[i];
+    const r = await fetchKlines(symbol, interval, limit);
+    result[symbol] = r.error ? { error: r.error } : r.data;
+
+    // فاصله‌ی کوتاه بین درخواست‌ها به Binance، فقط وقتی واقعاً درخواست تازه زده شد (نه از کش)
+    if (!r.fromCache && i < symbolList.length - 1) {
+      await sleep(150);
+    }
+  }
+
+  res.json(result);
+});
+
+// قیمت لحظه‌ای — با cache (همه‌ی symbol‌ها با یک درخواست از Binance)
 app.get('/api/prices', async (req, res) => {
   const now = Date.now();
   if (pricesCache && (now - pricesCacheTime) < PRICES_CACHE_TTL) {

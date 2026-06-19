@@ -40,6 +40,17 @@ export const COIN_NAMES: Record<CoinKey, string> = {
 
 export const COINS: CoinKey[] = ['btc', 'eth', 'sol', 'xrp', 'bnb', 'doge', 'ada', 'avax'];
 
+function parseCandleArray(data: unknown[]): OHLCCandle[] {
+  return data.map((c: unknown[]) => ({
+    timestamp: c[0] as number,
+    open: Number(c[1]),
+    high: Number(c[2]),
+    low: Number(c[3]),
+    close: Number(c[4]),
+    volume: Number(c[5]),
+  }));
+}
+
 export async function getKlines(
   coinKey: CoinKey | string,
   interval: string = '15m',
@@ -55,18 +66,54 @@ export async function getKlines(
     const data = await response.json();
     if (!Array.isArray(data)) return [];
 
-    return data.map((c: unknown[]) => ({
-      timestamp: c[0] as number,
-      open: Number(c[1]),
-      high: Number(c[2]),
-      low: Number(c[3]),
-      close: Number(c[4]),
-      volume: Number(c[5]),
-    }));
+    return parseCandleArray(data);
   } catch (error) {
     console.error('Klines error:', error);
     return [];
   }
+}
+
+// نسخه‌ی batch: کندل‌های چند کوین رو با یک درخواست HTTP از بک‌اند می‌گیره
+// (بک‌اند خودش پشت‌سرهم با Binance حرف می‌زند، نه موازی) — فشار کمتر روی Binance
+export async function getKlinesBatch(
+  coinKeys: (CoinKey | string)[],
+  interval: string = '15m',
+  limit: number = 200
+): Promise<Partial<Record<CoinKey, OHLCCandle[]>>> {
+  const symbols = coinKeys
+    .map((key) => SYMBOL_MAP[key as CoinKey])
+    .filter(Boolean);
+
+  if (symbols.length === 0) return {};
+
+  const symbolToCoin: Record<string, CoinKey> = {};
+  coinKeys.forEach((key) => {
+    const symbol = SYMBOL_MAP[key as CoinKey];
+    if (symbol) symbolToCoin[symbol] = key as CoinKey;
+  });
+
+  const result: Partial<Record<CoinKey, OHLCCandle[]>> = {};
+
+  try {
+    const url = `${BACKEND_URL}/api/klines-batch?symbols=${symbols.join(',')}&interval=${interval}&limit=${limit}`;
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`Backend HTTP ${response.status}`);
+    const data: Record<string, unknown> = await response.json();
+
+    Object.entries(data).forEach(([symbol, value]) => {
+      const coinKey = symbolToCoin[symbol];
+      if (!coinKey) return;
+      if (Array.isArray(value)) {
+        result[coinKey] = parseCandleArray(value as unknown[]);
+      } else {
+        result[coinKey] = [];
+      }
+    });
+  } catch (error) {
+    console.error('Klines batch error:', error);
+  }
+
+  return result;
 }
 
 export async function getBinancePrices(): Promise<Record<string, number> | null> {
