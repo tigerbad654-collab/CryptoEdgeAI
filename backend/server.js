@@ -41,7 +41,14 @@ async function fetchKlines(symbol, interval, limit) {
     const r = await fetch(url);
     if (!r.ok) {
       if (cached) return { data: cached.data, fromCache: true };
-      return { error: `Binance HTTP ${r.status}` };
+      const retryAfter = r.headers.get('retry-after');
+      let bodyText = '';
+      try { bodyText = await r.text(); } catch (_) {}
+      return {
+        error: `Binance HTTP ${r.status}`,
+        retryAfterSeconds: retryAfter ? Number(retryAfter) : null,
+        binanceBody: bodyText ? bodyText.slice(0, 500) : null,
+      };
     }
     const data = await r.json();
     klinesCache.set(cacheKey, { data, time: now });
@@ -60,7 +67,11 @@ app.get('/api/klines', async (req, res) => {
 
   const result = await fetchKlines(symbol, interval, limit);
   if (result.error) {
-    return res.status(result.fromCache ? 200 : 502).json({ error: result.error });
+    return res.status(result.fromCache ? 200 : 502).json({
+      error: result.error,
+      retryAfterSeconds: result.retryAfterSeconds ?? null,
+      binanceBody: result.binanceBody ?? null,
+    });
   }
   res.json(result.data);
 });
