@@ -1,6 +1,7 @@
 // ============================================================
 // app/(tabs)/signals.tsx
 // صفحه سیگنال حرفه‌ای — چارت کامل + اندیکاتور + AI
+// + تأیید چند تایم‌فریمی (Multi-Timeframe Confirmation)
 // ============================================================
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
@@ -35,6 +36,7 @@ import {
   subscribeKlineStream,
   subscribeLivePrices,
 } from '../../services/binanceApi';
+import { generateMultiTimeframeSignal } from '../../services/multiTimeframeSignal';
 import { OHLCData, SignalResult, generateSignal } from '../../services/signalEngine';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
@@ -43,6 +45,11 @@ const CHART_HEIGHT = 260;
 const CANDLE_AREA_HEIGHT = 180;
 const VOLUME_HEIGHT = 40;
 const PADDING = { top: 10, right: 50, bottom: 20, left: 8 };
+
+// هر چند وقت یک‌بار تأیید چند‌تایم‌فریمی (۱h/۴h) دوباره گرفته شود.
+// سیگنال ۱۵ دقیقه‌ای و نمایش قیمت همچنان لحظه‌ای (real-time) باقی می‌ماند؛
+// فقط «تأیید جهت» با این فاصله تازه می‌شود.
+const MTF_REFRESH_MS = 5 * 60 * 1000;
 
 const COIN_SYMBOLS_DISPLAY: Record<CoinKey, string> = {
   btc: '₿', eth: 'Ξ', sol: '◎', xrp: '✕',
@@ -53,6 +60,27 @@ type AIState = { text: string; loading: boolean; visible: boolean; language: 'fa
 type IntervalKey = '1m' | '5m' | '15m' | '1h' | '4h' | '1d';
 
 const INTERVALS: IntervalKey[] = ['5m', '15m', '1h', '4h', '1d'];
+
+// وضعیت تأیید چند‌تایم‌فریمی برای هر کوین (جدا از خود SignalResult نمایشی)
+interface MTFConfirmState {
+  confirmed: boolean;
+  overallTrend: 'bullish' | 'bearish' | 'neutral';
+  h1Trend: 'bullish' | 'bearish' | 'neutral';
+}
+
+// اگر سیگنال تأیید نشده بود، آن را به WAIT تبدیل می‌کند (برای نمایش)
+function applyConfirmation(sig: SignalResult, mtf: MTFConfirmState | undefined): SignalResult {
+  if (!mtf) return sig; // هنوز تأییدیه‌ای نگرفته‌ایم؛ سیگنال خام را نشان بده تا صفحه خالی نباشد
+  if (sig.signal === 'WAIT') return sig;
+
+  const aligned =
+    (sig.signal === 'LONG' && mtf.h1Trend === 'bullish') ||
+    (sig.signal === 'SHORT' && mtf.h1Trend === 'bearish');
+
+  if (aligned) return sig;
+
+  return { ...sig, signal: 'WAIT', color: '#FACC15', confidence: 50 };
+}
 
 // ============================================================
 // چارت حرفه‌ای SVG
@@ -393,7 +421,10 @@ function IndicatorRow({ label, value, color, subValue }: {
 // ============================================================
 export default function SignalsScreen() {
   const [prices, setPrices] = useState<Record<CoinKey, number> | null>(null);
-  const [signals, setSignals] = useState<Record<CoinKey, SignalResult> | null>(null);
+  // سیگنال "خام" تایم‌فریم انتخاب‌شده (همان منطق قبلی، بدون فیلتر)
+  const [rawSignals, setRawSignals] = useState<Record<CoinKey, SignalResult> | null>(null);
+  // وضعیت تأیید چند‌تایم‌فریمی (هر ۵ دقیقه تازه می‌شود)
+  const [mtfConfirm, setMtfConfirm] = useState<Record<CoinKey, MTFConfirmState>>({} as Record<CoinKey, MTFConfirmState>);
   const [refreshing, setRefreshing] = useState(false);
   const [expandedCoin, setExpandedCoin] = useState<CoinKey | null>(null);
   const [chartCoin, setChartCoin] = useState<CoinKey | null>(null);
@@ -407,6 +438,13 @@ export default function SignalsScreen() {
 
   const ohlcHistories = useRef<Record<CoinKey, OHLCData[]>>({} as Record<CoinKey, OHLCData[]>);
   const klineUnsubs = useRef<Record<CoinKey, (() => void)>>({} as any);
+
+  // سیگنال‌هایی که واقعاً نمایش داده می‌شوند: خام + فیلتر تأیید چند‌تایم‌فریمی
+  const signals: Record<CoinKey, SignalResult> | null = rawSignals
+    ? (Object.fromEntries(
+        COINS.map((c) => [c, rawSignals[c] ? applyConfirmation(rawSignals[c], mtfConfirm[c]) : rawSignals[c]])
+      ) as Record<CoinKey, SignalResult>)
+    : null;
 
   const loadCandles = useCallback(async (interval: IntervalKey = selectedInterval) => {
     const newSignals = {} as Record<CoinKey, SignalResult>;
@@ -422,8 +460,29 @@ export default function SignalsScreen() {
       })
     );
 
-    setSignals((prev) => ({ ...(prev ?? {}), ...newSignals } as Record<CoinKey, SignalResult>));
+    setRawSignals((prev) => ({ ...(prev ?? {}), ...newSignals } as Record<CoinKey, SignalResult>));
     setPrices((prev) => ({ ...(prev ?? {}), ...newPrices } as Record<CoinKey, number>));
+  }, [selectedInterval]);
+
+  // تأیید چند‌تایم‌فریمی (۱۵m تأییدشده با ۱h، + جهت ۴h نمایشی) — هر ۵ دقیقه تازه می‌شود.
+  // فقط زمانی معنا دارد که تایم‌فریم انتخاب‌شده ۱۵ دقیقه باشد (چون منطق توافق‌شده روی ۱۵m/۱h/۴h است)
+  const loadMultiTimeframeConfirmation = useCallback(async () => {
+    if (selectedInterval !== '15m') return;
+
+    await Promise.all(
+      COINS.map(async (coin) => {
+        const result = await generateMultiTimeframeSignal(coin);
+        if (!result) return;
+        setMtfConfirm((prev) => ({
+          ...prev,
+          [coin]: {
+            confirmed: result.confirmed,
+            overallTrend: result.overallTrend,
+            h1Trend: result.timeframes.h1.emaTrend,
+          },
+        }));
+      })
+    );
   }, [selectedInterval]);
 
   const onLivePrice = useCallback((coin: string, price: number) => {
@@ -439,7 +498,7 @@ export default function SignalsScreen() {
     };
     const updated = [...candles.slice(0, lastIndex), updatedLast];
     ohlcHistories.current[key] = updated;
-    setSignals((prev) => ({ ...(prev as any), [key]: generateSignal(updated) }));
+    setRawSignals((prev) => ({ ...(prev as any), [key]: generateSignal(updated) }));
     setPrices((prev) => ({ ...(prev as any), [key]: price }));
   }, []);
 
@@ -480,7 +539,7 @@ export default function SignalsScreen() {
       }
 
       ohlcHistories.current[coin] = updated;
-      setSignals((prev) => ({ ...(prev as any), [coin]: generateSignal(updated) }));
+      setRawSignals((prev) => ({ ...(prev as any), [coin]: generateSignal(updated) }));
       setPrices((prev) => ({ ...(prev as any), [coin]: candle.close }));
     });
     klineUnsubs.current[coin] = unsub;
@@ -488,18 +547,22 @@ export default function SignalsScreen() {
 
   useEffect(() => {
     loadCandles();
+    loadMultiTimeframeConfirmation();
     const unsubPrice = subscribeLivePrices(COINS, onLivePrice, setIsLive);
     const candleRefresh = setInterval(() => loadCandles(), 5 * 60 * 1000);
+    const mtfRefresh = setInterval(() => loadMultiTimeframeConfirmation(), MTF_REFRESH_MS);
     return () => {
       unsubPrice();
       clearInterval(candleRefresh);
+      clearInterval(mtfRefresh);
       Object.values(klineUnsubs.current).forEach((u) => u?.());
     };
-  }, [loadCandles, onLivePrice]);
+  }, [loadCandles, loadMultiTimeframeConfirmation, onLivePrice]);
 
   // وقتی interval تغییر کرد
   useEffect(() => {
     loadCandles(selectedInterval);
+    loadMultiTimeframeConfirmation();
     if (chartCoin) subscribeKline(chartCoin, selectedInterval);
   }, [selectedInterval]);
 
@@ -514,6 +577,7 @@ export default function SignalsScreen() {
   const onRefresh = async () => {
     setRefreshing(true);
     await loadCandles();
+    await loadMultiTimeframeConfirmation();
     setRefreshing(false);
   };
 
@@ -597,6 +661,7 @@ export default function SignalsScreen() {
         if (!sig || price === undefined) return null;
         const change = parseFloat(sig.change);
         const isPositive = change >= 0;
+        const mtf = mtfConfirm[coin];
 
         return (
           <View key={coin} style={styles.card}>
@@ -641,6 +706,19 @@ export default function SignalsScreen() {
                 </View>
               </View>
             </View>
+
+            {/* نشانگر تأیید چند تایم‌فریمی (فقط وقتی روی 15m هستیم و دیتای تأیید موجود است) */}
+            {selectedInterval === '15m' && mtf && (
+              <View style={styles.mtfRow}>
+                <Text style={styles.mtfLabel}>
+                  1H: {mtf.h1Trend === 'bullish' ? '▲' : mtf.h1Trend === 'bearish' ? '▼' : '◆'} {' '}
+                  4H: {mtf.overallTrend === 'bullish' ? '▲' : mtf.overallTrend === 'bearish' ? '▼' : '◆'}
+                </Text>
+                <Text style={[styles.mtfBadge, { color: mtf.confirmed ? '#22C55E' : '#64748B' }]}>
+                  {mtf.confirmed ? '✓ Confirmed' : '— Unconfirmed'}
+                </Text>
+              </View>
+            )}
 
             {/* Confidence Bar */}
             <View style={styles.progressContainer}>
@@ -901,6 +979,14 @@ const styles = StyleSheet.create({
   metaText: { color: '#94A3B8', fontSize: 13 },
   trendBadge: { paddingVertical: 3, paddingHorizontal: 8, borderRadius: 6 },
   trendText: { fontSize: 12, fontWeight: '600' },
+
+  mtfRow: {
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    backgroundColor: '#071330', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6,
+    marginBottom: 12,
+  },
+  mtfLabel: { color: '#94A3B8', fontSize: 12, fontWeight: '600' },
+  mtfBadge: { fontSize: 11, fontWeight: '700' },
 
   progressContainer: { marginBottom: 12 },
   confidenceLabel: { color: '#64748B', fontSize: 12, marginBottom: 5 },

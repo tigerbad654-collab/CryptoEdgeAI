@@ -41,14 +41,17 @@ export const COIN_NAMES: Record<CoinKey, string> = {
 export const COINS: CoinKey[] = ['btc', 'eth', 'sol', 'xrp', 'bnb', 'doge', 'ada', 'avax'];
 
 function parseCandleArray(data: unknown[]): OHLCCandle[] {
-  return data.map((c: unknown[]) => ({
-    timestamp: c[0] as number,
-    open: Number(c[1]),
-    high: Number(c[2]),
-    low: Number(c[3]),
-    close: Number(c[4]),
-    volume: Number(c[5]),
-  }));
+  return data.map((c) => {
+    const row = c as unknown[];
+    return {
+      timestamp: row[0] as number,
+      open: Number(row[1]),
+      high: Number(row[2]),
+      low: Number(row[3]),
+      close: Number(row[4]),
+      volume: Number(row[5]),
+    };
+  });
 }
 
 export async function getKlines(
