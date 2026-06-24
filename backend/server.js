@@ -21,12 +21,12 @@ const PRICES_CACHE_TTL = 30000; // 30 ثانیه
 const klinesCache = new Map();
 const KLINES_CACHE_TTL = 60000; // 60 ثانیه
 
-// کوچک کمک‌کننده: یک تاخیر کوتاه بین درخواست‌ها به Binance
+// کمک‌کننده: یک تاخیر کوتاه بین درخواست‌ها به Binance
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// گرتن کندل‌های یک symbol از Binance (با کش)
+// گرفتن کندل‌های یک symbol از Binance (با کش)
 async function fetchKlines(symbol, interval, limit) {
   const cacheKey = `${symbol}_${interval}_${limit}`;
   const now = Date.now();
@@ -76,8 +76,8 @@ app.get('/api/klines', async (req, res) => {
   res.json(result.data);
 });
 
-// کندل‌های چند symbol با یک درخواست از رانت‌اند —
-// پشت‌صحنه پشت‌سرهم (نه موازی) به Binance درخواست می‌زند تا شار کمتر شود
+// کندل‌های چند symbol با یک درخواست از فرانت‌اند —
+// پشت‌سرهم (نه موازی) به Binance درخواست می‌زند تا ریسک بن کمتر شود
 app.get('/api/klines-batch', async (req, res) => {
   const { symbols, interval = '15m', limit = 200 } = req.query;
   if (!symbols) return res.status(400).json({ error: 'symbols is required (comma separated)' });
@@ -90,7 +90,7 @@ app.get('/api/klines-batch', async (req, res) => {
     const r = await fetchKlines(symbol, interval, limit);
     result[symbol] = r.error ? { error: r.error } : r.data;
 
-    // اصله‌ی کوتاه بین درخواست‌ها به Binance، قط وقتی واقعاً درخواست تازه زده شد (نه از کش)
+    // فاصله‌ی کوتاه بین درخواست‌ها به Binance، فقط وقتی واقعاً درخواست تازه زده شد (نه از کش)
     if (!r.fromCache && i < symbolList.length - 1) {
       await sleep(150);
     }
@@ -112,7 +112,14 @@ app.get('/api/historical-klines', async (req, res) => {
     const url = `${BINANCE_REST}/api/v3/klines?symbol=${symbol}&interval=${interval}&startTime=${startTime}&endTime=${endTime}&limit=1000`;
     const r = await fetch(url);
     if (!r.ok) {
-      return res.status(502).json({ error: `Binance HTTP ${r.status}` });
+      const retryAfter = r.headers.get('retry-after');
+      let bodyText = '';
+      try { bodyText = await r.text(); } catch (_) {}
+      return res.status(r.status).json({
+        error: `Binance HTTP ${r.status}`,
+        retryAfterSeconds: retryAfter ? Number(retryAfter) : null,
+        binanceBody: bodyText ? bodyText.slice(0, 500) : null,
+      });
     }
     const data = await r.json();
     res.json(data);
@@ -122,7 +129,7 @@ app.get('/api/historical-klines', async (req, res) => {
   }
 });
 
-// قیمت لحظه‌ای — با cache (همه‌ی symbol‌ها با یک درخواست از Binance)
+// قیمت لحظه‌ای — با cache (همه‌ی symbolها با یک درخواست از Binance)
 app.get('/api/prices', async (req, res) => {
   const now = Date.now();
   if (pricesCache && (now - pricesCacheTime) < PRICES_CACHE_TTL) {
